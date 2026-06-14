@@ -22,22 +22,19 @@ jobs:
 
       - name: Package and Transfer Code
         run: |
-          # Package project excluding temporary and build artifacts, writing to a temp location outside the directory
-          tar -czf /tmp/project.tar.gz \
+          # Package project and stream it directly over SSH to the remote host, avoiding SCP entirely to bypass shell output issues
+          tar -czf - \
             --exclude='node_modules' \
             --exclude='.git' \
             --exclude='.github' \
             --exclude='myenv' \
             --exclude='__pycache__' \
             --exclude='*.pyc' \
-            .
-
-          # Copy archive to EC2 host (using root username specified by user)
-          scp -o StrictHostKeyChecking=no /tmp/project.tar.gz root@${{ secrets.EC2_HOST }}:~/project.tar.gz
+            . | ssh -T -o StrictHostKeyChecking=no root@${{ secrets.EC2_HOST }} "cat > ~/project.tar.gz"
 
       - name: Execute Remote Deployment
         run: |
-          ssh -o StrictHostKeyChecking=no root@${{ secrets.EC2_HOST }} "
+          ssh -T -o StrictHostKeyChecking=no root@${{ secrets.EC2_HOST }} "
             # Ensure deployment directory exists
             mkdir -p ~/dev-dashboard
             
