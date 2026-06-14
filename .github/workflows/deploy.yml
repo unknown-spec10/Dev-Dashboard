@@ -22,8 +22,8 @@ jobs:
 
       - name: Package and Transfer Code
         run: |
-          # Package project excluding temporary and build artifacts
-          tar -czf project.tar.gz \
+          # Package project excluding temporary and build artifacts, writing to a temp location outside the directory
+          tar -czf /tmp/project.tar.gz \
             --exclude='node_modules' \
             --exclude='.git' \
             --exclude='.github' \
@@ -33,7 +33,7 @@ jobs:
             .
 
           # Copy archive to EC2 host (using root username specified by user)
-          scp -o StrictHostKeyChecking=no project.tar.gz root@${{ secrets.EC2_HOST }}:~/project.tar.gz
+          scp -o StrictHostKeyChecking=no /tmp/project.tar.gz root@${{ secrets.EC2_HOST }}:~/project.tar.gz
 
       - name: Execute Remote Deployment
         run: |
