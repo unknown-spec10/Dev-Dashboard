@@ -30,11 +30,11 @@ jobs:
             --exclude='myenv' \
             --exclude='__pycache__' \
             --exclude='*.pyc' \
-            . | ssh -T -o StrictHostKeyChecking=no root@${{ secrets.EC2_HOST }} "cat > ~/project.tar.gz"
+            . | ssh -T -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} "cat > ~/project.tar.gz"
 
       - name: Execute Remote Deployment
         run: |
-          ssh -T -o StrictHostKeyChecking=no root@${{ secrets.EC2_HOST }} "
+          ssh -T -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} "
             # Ensure deployment directory exists
             mkdir -p ~/dev-dashboard
             
@@ -73,11 +73,21 @@ jobs:
               echo '.env successfully provisioned with secure credentials.'
             fi
             
-            # Determine docker compose command format (compose vs docker-compose)
-            if docker compose version >/dev/null 2>&1; then
-              COMPOSE_CMD='docker compose'
+            # Check if docker commands require sudo prefix
+            if docker ps >/dev/null 2>&1; then
+              DOCKER_PREFIX=''
             else
-              COMPOSE_CMD='docker-compose'
+              DOCKER_PREFIX='sudo'
+              echo 'Docker commands require sudo, prefix will be applied.'
+            fi
+            
+            # Determine docker compose command format (compose vs docker-compose)
+            if \$DOCKER_PREFIX docker compose version >/dev/null 2>&1; then
+              COMPOSE_CMD=\"\$DOCKER_PREFIX docker compose\"
+            elif \$DOCKER_PREFIX docker-compose version >/dev/null 2>&1; then
+              COMPOSE_CMD=\"\$DOCKER_PREFIX docker-compose\"
+            else
+              COMPOSE_CMD=\"\$DOCKER_PREFIX docker-compose\"
             fi
             
             echo \"Using compose command: \$COMPOSE_CMD\"
@@ -87,5 +97,5 @@ jobs:
             \$COMPOSE_CMD -f docker-compose.prod.yml up -d --build
             
             # Clean up older unused docker images to prevent EC2 storage fill-up
-            docker image prune -f
+            \$DOCKER_PREFIX docker image prune -f
           "
