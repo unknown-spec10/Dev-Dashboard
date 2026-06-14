@@ -1,0 +1,94 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Package and Transfer Code
+        run: |
+          # Package project excluding temporary and build artifacts
+          tar -czf project.tar.gz \
+            --exclude='node_modules' \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='myenv' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            .
+
+          # Copy archive to EC2 host (using root username specified by user)
+          scp -o StrictHostKeyChecking=no project.tar.gz root@${{ secrets.EC2_HOST }}:~/project.tar.gz
+
+      - name: Execute Remote Deployment
+        run: |
+          ssh -o StrictHostKeyChecking=no root@${{ secrets.EC2_HOST }} "
+            # Ensure deployment directory exists
+            mkdir -p ~/dev-dashboard
+            
+            # Extract archive
+            tar -xzf ~/project.tar.gz -C ~/dev-dashboard
+            rm ~/project.tar.gz
+            
+            cd ~/dev-dashboard
+            
+            # Auto-provision production .env if it does not exist
+            if [ ! -f .env ]; then
+              echo 'Copying .env.example to .env...'
+              cp .env.example .env
+              
+              # Generate secure random keys for production
+              RANDOM_SECRET=\$(openssl rand -hex 32)
+              RANDOM_DB_PASS=\$(openssl rand -hex 16)
+              
+              # Generate Fernet key using python
+              RANDOM_FERNET=\$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())' 2>/dev/null || openssl rand -base64 32)
+              
+              # Replace placeholders in .env
+              sed -i \"s/SECRET_KEY=dev-dashboard-secret-key-change-me-in-production/SECRET_KEY=\$RANDOM_SECRET/g\" .env
+              sed -i \"s/POSTGRES_PASSWORD=postgres/POSTGRES_PASSWORD=\$RANDOM_DB_PASS/g\" .env
+              sed -i \"s|postgresql+asyncpg://postgres:postgres@db:5432/dev_dashboard|postgresql+asyncpg://postgres:\$RANDOM_DB_PASS@db:5432/dev_dashboard|g\" .env
+              sed -i \"s|postgresql+psycopg2://postgres:postgres@db:5432/dev_dashboard|postgresql+psycopg2://postgres:\$RANDOM_DB_PASS@db:5432/dev_dashboard|g\" .env
+              
+              # Update VAULT_ENCRYPTION_KEY if empty
+              sed -i \"s/VAULT_ENCRYPTION_KEY=/VAULT_ENCRYPTION_KEY=\$RANDOM_FERNET/g\" .env
+              
+              # Update Host IP for redirect and frontend urls
+              EC2_PUBLIC_IP=\$(curl -s https://api.ipify.org || echo 'localhost')
+              sed -i \"s|http://localhost:8000/api/auth/oauth/google/callback|http://\$EC2_PUBLIC_IP/api/auth/oauth/google/callback|g\" .env
+              sed -i \"s|http://localhost:5173|http://\$EC2_PUBLIC_IP|g\" .env
+              
+              echo '.env successfully provisioned with secure credentials.'
+            fi
+            
+            # Determine docker compose command format (compose vs docker-compose)
+            if docker compose version >/dev/null 2>&1; then
+              COMPOSE_CMD='docker compose'
+            else
+              COMPOSE_CMD='docker-compose'
+            fi
+            
+            echo \"Using compose command: \$COMPOSE_CMD\"
+            
+            # Shut down old stack and build/start the new production containers
+            \$COMPOSE_CMD -f docker-compose.prod.yml down --remove-orphans
+            \$COMPOSE_CMD -f docker-compose.prod.yml up -d --build
+            
+            # Clean up older unused docker images to prevent EC2 storage fill-up
+            docker image prune -f
+          "

@@ -1,0 +1,110 @@
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: dev_dashboard_db
+    environment:
+      POSTGRES_DB: dev_dashboard
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dev_dashboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: dev_dashboard_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dev_dashboard_api
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_ASYNC_URI=postgresql+asyncpg://postgres:postgres@db:5432/dev_dashboard
+      - POSTGRES_SYNC_URI=postgresql+psycopg2://postgres:postgres@db:5432/dev_dashboard
+      - REDIS_URI=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dev_dashboard_worker
+    command: celery -A app.core.celery_app.celery worker --loglevel=info --concurrency=2 -Q high,celery,low
+    volumes:
+      - ./backend:/app
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_ASYNC_URI=postgresql+asyncpg://postgres:postgres@db:5432/dev_dashboard
+      - POSTGRES_SYNC_URI=postgresql+psycopg2://postgres:postgres@db:5432/dev_dashboard
+      - REDIS_URI=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dev_dashboard_beat
+    command: celery -A app.core.celery_app.celery beat --loglevel=info
+    volumes:
+      - ./backend:/app
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_ASYNC_URI=postgresql+asyncpg://postgres:postgres@db:5432/dev_dashboard
+      - POSTGRES_SYNC_URI=postgresql+psycopg2://postgres:postgres@db:5432/dev_dashboard
+      - REDIS_URI=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dev_dashboard_frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

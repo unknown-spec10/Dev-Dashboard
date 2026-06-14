@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: dev_dashboard_db_prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dev_dashboard
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      # Bind to localhost only for security (accessible locally, blocked from public internet)
+      - "127.0.0.1:5435:5432"
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dev_dashboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: dev_dashboard_redis_prod
+    restart: unless-stopped
+    ports:
+      # Bind to localhost only for security
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dev_dashboard_api_prod
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_ASYNC_URI=${POSTGRES_ASYNC_URI:-postgresql+asyncpg://postgres:postgres@db:5432/dev_dashboard}
+      - POSTGRES_SYNC_URI=${POSTGRES_SYNC_URI:-postgresql+psycopg2://postgres:postgres@db:5432/dev_dashboard}
+      - REDIS_URI=${REDIS_URI:-redis://redis:6379/0}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dev_dashboard_worker_prod
+    command: celery -A app.core.celery_app.celery worker --loglevel=info --concurrency=2 -Q high,celery,low
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_ASYNC_URI=${POSTGRES_ASYNC_URI:-postgresql+asyncpg://postgres:postgres@db:5432/dev_dashboard}
+      - POSTGRES_SYNC_URI=${POSTGRES_SYNC_URI:-postgresql+psycopg2://postgres:postgres@db:5432/dev_dashboard}
+      - REDIS_URI=${REDIS_URI:-redis://redis:6379/0}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dev_dashboard_beat_prod
+    command: celery -A app.core.celery_app.celery beat --loglevel=info
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_ASYNC_URI=${POSTGRES_ASYNC_URI:-postgresql+asyncpg://postgres:postgres@db:5432/dev_dashboard}
+      - POSTGRES_SYNC_URI=${POSTGRES_SYNC_URI:-postgresql+psycopg2://postgres:postgres@db:5432/dev_dashboard}
+      - REDIS_URI=${REDIS_URI:-redis://redis:6379/0}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    container_name: dev_dashboard_frontend_prod
+    restart: unless-stopped
+    ports:
+      # Expose port 80 to the public web (or 80:80 depending on host)
+      - "80:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata_prod:
